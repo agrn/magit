@@ -141,7 +141,9 @@ does not carry to other options."
                            'magit-set-window-margin nil t)
               (remove-hook 'window-configuration-change-hook
                            'magit-set-window-margin t))))
-        (when (and enable (or refresh magit-set-buffer-margin-refresh))
+        (when (and enable
+                   (or refresh magit-set-buffer-margin-refresh)
+                   (derived-mode-p 'magit-mode))
           (magit-refresh-buffer))))))
 
 (defun magit-set-window-margin (&optional window)

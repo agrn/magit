@@ -67,10 +67,37 @@ The author and committer time formats can be specified with
 
 (defcustom magit-blame-show-headings t
   "Whether to initially show blame block headings.
-The headings can also be toggled locally using command
-`magit-blame-toggle-headings'."
+
+Otherwise chunks are separated using thin lines only, or blame
+information is displayed in the buffer margin.  When the latter
+is the case, then neither the headings nor the separator lines
+are displayed and this option has no effect.
+
+The headings and the margin can be toggled from the blame popup
+on \"B\" in a buffer that is being blamed."
   :group 'magit-blame
   :type 'boolean)
+
+(defcustom magit-blame-margin '(nil age 30 nil nil)
+  "Format of the margin in buffers that are being blamed.
+
+The value has the form (INIT STYLE WIDTH AUTHOR AUTHOR-WIDTH).
+
+If INIT is non-nil, then the margin is shown initially.
+STYLE controls how to format the committer date.  It can be one
+  of `age' (to show the age of the commit), `age-abbreviated' (to
+  abbreviate the time unit to a character), or a string (suitable
+  for `format-time-string') to show the actual date.
+WIDTH controls the width of the margin.  This exists for forward
+  compatibility and currently the value should not be changed.
+AUTHOR controls whether the name of the author is also shown by
+  default.
+AUTHOR-WIDTH has to be an integer.  When the name of the author
+  is shown, then this specifies how much space is used to do so."
+  :package-version '(magit . "2.13.0")
+  :group 'magit-blame
+  :group 'magit-margin
+  :type magit-log-margin--custom-type)
 
 (defcustom magit-blame-disable-modes '(fci-mode yascroll-bar-mode)
   "List of modes not compatible with Magit-Blame mode.
@@ -241,6 +268,10 @@ in `magit-blame-read-only-mode-map' instead.")
            (when (and (boundp mode) (symbol-value mode))
              (funcall mode -1)
              (push mode magit-blame-disabled-modes)))
+         (setq magit--margin-option 'magit-blame-margin)
+         (add-hook 'magit-toggle-margin-hook
+                   'magit-blame-update-separators t t)
+         (magit-set-buffer-margin t)
          (setq magit-blame-separator (magit-blame-format-separator)))
         (t
          (when (process-live-p magit-blame-process)
@@ -259,6 +290,12 @@ in `magit-blame-read-only-mode-map' instead.")
          (kill-local-variable 'magit-blame-type)
          (unless buffer-read-only
            (kill-local-variable 'magit-blame-show-headings))
+         (kill-local-variable 'magit--margin-option)
+         (remove-hook 'magit-toggle-margin-hook
+                      'magit-blame-update-separators t)
+         (setcar magit-buffer-margin nil)
+         (magit-set-buffer-margin)
+         (set-window-buffer (selected-window) (current-buffer))
          (magit-blame--clear-overlays))))
 
 (defun magit-blame--clear-overlays ()
@@ -296,7 +333,8 @@ in `magit-blame-read-only-mode-map' instead.")
               (?r "Do not treat root commits as boundaries" "--root"))
   :options  '((?M "Detect lines moved or copied within a file" "-M")
               (?C "Detect lines moved or copied between files" "-C"))
-  :actions  '((?b "Show commits adding lines" magit-blame)
+  :actions  '("Actions"
+              (?b "Show commits adding lines" magit-blame)
               (?r (lambda ()
                     (with-current-buffer magit-pre-popup-buffer
                       (and (not buffer-file-name)
@@ -309,7 +347,12 @@ in `magit-blame-read-only-mode-map' instead.")
                            (propertize "Show last commits that still have lines"
                                        'face 'default))))
                   magit-blame-reverse)
-              (?h "Toggle chunk headings" magit-blame-toggle-headings))
+              (lambda ()
+                (and (with-current-buffer magit-pre-popup-buffer
+                       magit-blame-mode)
+                     (propertize "Refresh" 'face 'magit-popup-heading)))
+              (?L "Toggle margin"   magit-toggle-margin)
+              (?h "Toggle headings" magit-blame-toggle-headings))
   :default-arguments '("-w")
   :max-action-columns 1
   :default-action 'magit-blame)
@@ -442,6 +485,9 @@ in `magit-blame-read-only-mode-map' instead.")
                     (forward-line (1- final-line))
                     (--when-let (magit-blame-overlay-at)
                       (delete-overlay it))
+                    (save-excursion
+                      (magit-make-margin-overlay
+                       (propertize orig-rev 'face 'magit-blame-heading)))
                     (make-overlay (point)
                                   (progn (forward-line num-lines)
                                          (point))))))
@@ -452,9 +498,10 @@ in `magit-blame-read-only-mode-map' instead.")
         (overlay-put ov 'magit-blame chunk)
         (overlay-put ov 'magit-blame-heading heading)
         (overlay-put ov 'before-string
-                     (if magit-blame-show-headings
-                         heading
-                       magit-blame-separator))))))
+                     (and (not (magit-buffer-margin-p))
+                          (if magit-blame-show-headings
+                              heading
+                            magit-blame-separator)))))))
 
 (defun magit-blame-format-separator ()
   (propertize
@@ -664,9 +711,10 @@ then also kill the buffer."
         (let ((next (next-single-char-property-change (point) 'magit-blame)))
           (--when-let (magit-blame-overlay-at (point))
             (overlay-put it 'before-string
-                         (if magit-blame-show-headings
-                             (overlay-get it 'magit-blame-heading)
-                           magit-blame-separator)))
+                         (and (not (magit-buffer-margin-p))
+                              (if magit-blame-show-headings
+                                  (overlay-get it 'magit-blame-heading)
+                                magit-blame-separator))))
           (goto-char (or next (point-max))))))))
 
 (defun magit-blame-copy-hash ()

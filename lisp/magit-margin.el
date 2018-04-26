@@ -77,7 +77,8 @@ does not carry to other options."
   (unless (magit-margin-option)
     (user-error "Magit margin isn't supported in this buffer"))
   (setcar magit-buffer-margin (not (magit-buffer-margin-p)))
-  (magit-set-buffer-margin))
+  (magit-set-buffer-margin)
+  (run-hooks 'magit-toggle-margin-hook))
 
 (defun magit-cycle-margin-style ()
   "Cycle style used for the Magit margin."

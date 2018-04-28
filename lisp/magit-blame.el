@@ -37,6 +37,17 @@
   :link '(info-link "(magit)Blaming")
   :group 'magit-modes)
 
+(defvar magit-blame-style 'margin)
+
+;; (defvar magit-blame-styles
+;;   '((margin
+;;      (margin-format  . "%a %s"))
+;;     (headings
+;;      (heading-format . "%-20a %C %s")
+;;      (time-format    . "%F %H:%M"))
+;;     (lines
+;;      (show-lines     . t))))
+
 (defcustom magit-blame-heading-format "%-20a %C %s"
   "Format string used for blame headings.
 
@@ -54,6 +65,11 @@ The author and committer time formats can be specified with
   :group 'magit-blame
   :type 'string)
 
+(defcustom magit-blame-margin-format "%a %s"
+  "TODO"
+  :group 'magit-blame
+  :type 'string)
+
 (defcustom magit-blame-time-format "%F %H:%M"
   "Format for time strings in blame headings."
   :group 'magit-blame
@@ -62,13 +78,6 @@ The author and committer time formats can be specified with
 (defcustom magit-blame-read-only t
   "Whether to initially make the blamed buffer read-only."
   :package-version '(magit . "2.13.0")
-  :group 'magit-blame
-  :type 'boolean)
-
-(defcustom magit-blame-show-headings t
-  "Whether to initially show blame block headings.
-The headings can also be toggled locally using command
-`magit-blame-toggle-headings'."
   :group 'magit-blame
   :type 'boolean)
 
@@ -185,7 +194,7 @@ in `magit-blame-read-only-mode-map' instead.")
            (define-key map (kbd   "r") 'magit-blame-removal)
            (define-key map (kbd   "f") 'magit-blame-reverse)
            (define-key map (kbd   "B") 'magit-blame-popup)))
-    (define-key map (kbd   "t") 'magit-blame-toggle-headings)
+    (define-key map (kbd   "c") 'magit-blame-cycle-style)
     (define-key map (kbd   "q") 'magit-blame-quit)
     (define-key map (kbd "M-w") 'magit-blame-copy-hash)
     (define-key map (kbd "SPC") 'magit-diff-show-or-scroll-up)
@@ -226,7 +235,12 @@ in `magit-blame-read-only-mode-map' instead.")
            (when (and (boundp mode) (symbol-value mode))
              (funcall mode -1)
              (push mode magit-blame-disabled-modes)))
-         (setq magit-blame-separator (magit-blame--format-separator)))
+         (setq magit-blame-separator (magit-blame--format-separator))
+
+         (setq-local magit-blame-style magit-blame-style)
+         (when (eq magit-blame-style 'margin)
+           (setq left-margin-width 30))
+         (set-window-buffer (selected-window) (current-buffer)))
         (t
          (when (process-live-p magit-blame-process)
            (kill-process magit-blame-process)
@@ -244,7 +258,12 @@ in `magit-blame-read-only-mode-map' instead.")
          (kill-local-variable 'magit-blame-type)
          (unless buffer-read-only
            (kill-local-variable 'magit-blame-show-headings))
-         (magit-blame--remove-overlays))))
+         (kill-local-variable 'magit--margin-option)
+         (magit-blame--remove-overlays)
+
+         (kill-local-variable 'magit-blame-style)
+         (setq left-margin-width 0)
+         (set-window-buffer (selected-window) (current-buffer)))))
 
 (defun magit-blame-goto-chunk-hook ()
   (let ((chunk (magit-blame-chunk-at (point))))
@@ -419,10 +438,25 @@ modes is toggled, then this mode also gets toggled automatically.
               (end (save-excursion
                      (forward-line (oref chunk num-lines))
                      (point))))
+          (magit-blame--make-margin-overlay chunk alist)
           (magit-blame--make-heading-overlay chunk alist beg end))))))
 
+(defun magit-blame--make-margin-overlay (chunk alist)
+  (--when-let (magit-blame--overlay-at (point) 'magit-blame-margin)
+    (delete-overlay it))
+  (let ((margin (cdr (assq 'margin alist))))
+    (unless margin
+      (setq margin
+            (magit-blame--format-rev (oref chunk orig-rev) alist
+                                     magit-blame-margin-format))
+      (nconc alist (list (cons 'margin margin))))
+    (let ((ov (make-overlay (line-beginning-position)
+                            (line-end-position))))
+      (overlay-put ov 'magit-blame-margin margin)
+      (magit-blame--update-margin-overlay ov))))
+
 (defun magit-blame--make-heading-overlay (chunk alist beg end)
-  (--when-let (magit-blame--overlay-at beg)
+  (--when-let (magit-blame--overlay-at beg 'magit-blame)
     (delete-overlay it))
   (let ((heading (cdr (assq 'heading alist))))
     (unless heading
@@ -441,13 +475,22 @@ modes is toggled, then this mode also gets toggled automatically.
     (dolist (ov (overlays-in (point-min) (point-max)))
       (cond ((overlay-get ov 'magit-blame)
              (magit-blame--update-heading-overlay ov))
-            ))))
+            ((overlay-get ov 'magit-blame-margin)
+             (magit-blame--update-margin-overlay ov))))))
+
+(defun magit-blame--update-margin-overlay (ov)
+  (overlay-put ov 'before-string
+               (and (> left-margin-width 0)
+                    (propertize "o" 'display
+                                (list (list 'margin 'left-margin)
+                                      (overlay-get ov 'magit-blame-margin))))))
 
 (defun magit-blame--update-heading-overlay (ov)
   (overlay-put ov 'before-string
-               (if magit-blame-show-headings
-                   (overlay-get ov 'magit-blame-heading)
-                 magit-blame-separator)))
+               (and (zerop left-margin-width)
+                    (if magit-blame-show-headings
+                        (overlay-get ov 'magit-blame-heading)
+                      magit-blame-separator))))
 
 (defun magit-blame--format-separator ()
   (propertize
@@ -487,7 +530,8 @@ modes is toggled, then this mode also gets toggled automatically.
   (save-restriction
     (widen)
     (dolist (ov (overlays-in (point-min) (point-max)))
-      (when (overlay-get ov 'magit-blame)
+      (when (or (overlay-get ov 'magit-blame)
+                (overlay-get ov 'magit-blame-margin))
         (delete-overlay ov)))))
 
 (defun magit-blame-maybe-show-message ()
@@ -648,10 +692,18 @@ then also kill the buffer."
   (interactive)
   (magit-blame-next-chunk-same-commit 'previous-single-char-property-change))
 
-(defun magit-blame-toggle-headings ()
-  "Show or hide blame chunk headings."
+(defun magit-blame-cycle-style ()
+  "Change how blame information is visualized."
   (interactive)
-  (setq-local magit-blame-show-headings (not magit-blame-show-headings))
+  (cond ((and (= left-margin-width 0)
+              (not magit-blame-show-headings))
+         (setq left-margin-width 30))
+        ((> left-margin-width 0)
+         (setq left-margin-width 0)
+         (setq magit-blame-show-headings t))
+        (magit-blame-show-headings
+         (setq magit-blame-show-headings nil)))
+  (set-window-buffer (selected-window) (current-buffer))
   (magit-blame--update-overlays))
 
 (defun magit-blame-copy-hash ()
@@ -674,7 +726,8 @@ instead of the hash, like `kill-ring-save' would."
               (?r "Do not treat root commits as boundaries" "--root"))
   :options  '((?M "Detect lines moved or copied within a file" "-M")
               (?C "Detect lines moved or copied between files" "-C"))
-  :actions  '((?b "Show commits adding lines" magit-blame)
+  :actions  '("Actions"
+              (?b "Show commits adding lines" magit-blame)
               (?r (lambda ()
                     (with-current-buffer magit-pre-popup-buffer
                       (and (not buffer-file-name)
@@ -687,7 +740,11 @@ instead of the hash, like `kill-ring-save' would."
                            (propertize "Show last commits that still have lines"
                                        'face 'default))))
                   magit-blame-reverse)
-              (?h "Toggle chunk headings" magit-blame-toggle-headings))
+              (lambda ()
+                (and (with-current-buffer magit-pre-popup-buffer
+                       magit-blame-mode)
+                     (propertize "Refresh" 'face 'magit-popup-heading)))
+              (?c "Cycle style" magit-blame-cycle-style))
   :default-arguments '("-w")
   :max-action-columns 1
   :default-action 'magit-blame)
